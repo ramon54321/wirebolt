@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
@@ -9,6 +11,7 @@ async fn server() {
         .expect("Unable to bind listener to socket.");
 
     loop {
+        println!("Waiting for connection.");
         let (mut stream, _) = tcp_listener
             .accept()
             .await
@@ -16,15 +19,18 @@ async fn server() {
 
         println!("Connection.");
 
-        let (read_half, write_half) = stream.split();
+        tokio::spawn(async move {
+            let (read_half, write_half) = stream.split();
 
-        let mut writer = BufWriter::new(write_half);
-        let mut reader = BufReader::new(read_half);
+            let mut writer = BufWriter::new(write_half);
+            let mut reader = BufReader::new(read_half);
 
-        write(&mut writer, "Hello from Server.".as_bytes().to_vec()).await;
-
-        let response = read(&mut reader).await;
-        println!("Response: {:?}", String::from_utf8(response).unwrap());
+            loop {
+                let received = read(&mut reader).await;
+                // println!("Received: {:?}", String::from_utf8(received).unwrap());
+                write(&mut writer, received).await;
+            }
+        });
     }
 }
 
@@ -38,10 +44,12 @@ async fn client() {
     let mut writer = BufWriter::new(write_half);
     let mut reader = BufReader::new(read_half);
 
-    let response = read(&mut reader).await;
-    println!("Response: {:?}", String::from_utf8(response).unwrap());
-
-    write(&mut writer, "Hello from Client.".as_bytes().to_vec()).await;
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        write(&mut writer, "Hello from Client.".as_bytes().to_vec()).await;
+        let response = read(&mut reader).await;
+        println!("Response: {:?}", String::from_utf8(response).unwrap());
+    }
 }
 
 async fn read<T>(reader: &mut BufReader<T>) -> Vec<u8>
@@ -50,7 +58,7 @@ where
 {
     let header = reader.read_u8().await.expect("Unable to read header.");
     println!("Header: {header}");
-    let mut buf = vec![0u8; 16];
+    let mut buf = vec![0u8; 64];
     reader.read(&mut buf).await.expect("Unable to read header.");
     buf
 }
