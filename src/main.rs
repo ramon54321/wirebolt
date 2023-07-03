@@ -1,7 +1,7 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, io::ErrorKind, sync::Arc, time::Duration};
 
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
+    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
     net::{TcpListener, TcpStream},
     select,
     sync::{
@@ -37,7 +37,7 @@ async fn server() {
             if keys.is_empty() {
                 None
             } else {
-                let index = (count % keys.len()) ;
+                let index = (count % keys.len());
                 println!("{index}");
                 Some(keys[index].clone())
             }
@@ -84,29 +84,55 @@ impl NetServerLayer1 {
                     read_rxs.lock().await.insert(name.clone(), read_rx);
                     write_txs.lock().await.insert(name.clone(), write_tx);
 
-                    tokio::spawn(async move {
-                        let (read_half, write_half) = stream.split();
+                    {
+                        let read_rxs = read_rxs.clone();
+                        let write_txs = write_txs.clone();
+                        tokio::spawn(async move {
+                            let (read_half, write_half) = stream.split();
 
-                        let mut writer = BufWriter::new(write_half);
-                        let mut reader = BufReader::new(read_half);
+                            let mut writer = BufWriter::new(write_half);
+                            let mut reader = BufReader::new(read_half);
 
-                        loop {
-                            // let received = read(&mut reader).await;
-                            // println!("Received: {:?}", String::from_utf8(received).unwrap());
-                            // tokio::time::sleep(Duration::from_millis(500)).await;
-                            // write(&mut writer, b"Greetings...".to_vec()).await;
+                            loop {
+                                // let received = read(&mut reader).await;
+                                // println!("Received: {:?}", String::from_utf8(received).unwrap());
+                                // tokio::time::sleep(Duration::from_millis(500)).await;
+                                // write(&mut writer, b"Greetings...".to_vec()).await;
 
-                            select! {
-                                bytes = write_rx.recv() => {
-                                    write(&mut writer, bytes.unwrap()).await;
-                                }
-                                response = read(&mut reader) => {
-                                    // println!("Response: {:?}", String::from_utf8(response.clone()).unwrap());
-                                    read_tx.try_send(response).unwrap();
+                                select! {
+                                    bytes = write_rx.recv() => {
+                                        match write(&mut writer, bytes.unwrap()).await {
+                                            Ok(_) => {},
+                                            Err(error) => eprintln!("Error in writing to socket: {}", error),
+                                        }
+                                    }
+                                    response = read(&mut reader) => {
+                                        // println!("Response: {:?}", String::from_utf8(response.clone()).unwrap());
+                                        // read_tx.try_send(response).unwrap();
+                                        match response {
+                                            Ok(bytes) => {
+                                                println!("Got byts: {:?}", bytes);
+                                                match read_tx.try_send(bytes) {
+                                                    Ok(_) => {},
+                                                    Err(error) => {
+                                                        eprintln!("Error in channeling read: {}", error);
+                                                        panic!();
+                                                    }
+                                                }
+                                            },
+                                            Err(error) => {
+                                                eprintln!("Error in read: {}", error);
+                                                println!("Removing this client handler");
+                                                read_rxs.lock().await.remove(&name.clone());
+                                                write_txs.lock().await.remove(&name.clone());
+                                                break;
+                                            },
+                                        }
+                                    }
                                 }
                             }
-                        }
-                    });
+                        });
+                    }
                 }
             });
         }
@@ -161,11 +187,22 @@ impl NetClientLayer1 {
 
                 select! {
                     bytes = write_rx.recv() => {
-                        write(&mut writer, bytes.unwrap()).await;
+                        // write(&mut writer, bytes.unwrap()).await;
+                        match write(&mut writer, bytes.unwrap()).await {
+                            Ok(_) => {},
+                            Err(error) => eprintln!("Error in writing to socket: {}", error),
+                        }
                     }
                     response = read(&mut reader) => {
                         // println!("Response: {:?}", String::from_utf8(response.clone()).unwrap());
-                        read_tx.try_send(response).unwrap();
+                        match response {
+                            Ok(bytes) => {
+                                read_tx.try_send(bytes).unwrap();
+                            },
+                            Err(error) => {
+                                eprintln!("Error in read: {}", error);
+                            },
+                        }
                     }
                 }
 
@@ -187,24 +224,28 @@ impl NetClientLayer1 {
     }
 }
 
-async fn read<T>(reader: &mut BufReader<T>) -> Vec<u8>
+async fn read<T>(reader: &mut BufReader<T>) -> Result<Vec<u8>, io::Error>
 where
     T: AsyncRead + Unpin,
 {
-    let header = reader.read_u8().await.expect("Unable to read header.");
+    // let header = reader.read_u8().await.expect("Unable to read header.");
     // println!("Header: {header}");
     let mut buf = vec![0u8; 64];
-    reader.read(&mut buf).await.expect("Unable to read header.");
-    buf
+    let bytes_count = reader.read(&mut buf).await?;
+    if bytes_count == 0 {
+        return Err(io::Error::new(ErrorKind::Other, "Read 0 Bytes!"));
+    }
+    Ok(buf)
 }
 
-async fn write<T>(writer: &mut BufWriter<T>, bytes: Vec<u8>)
+async fn write<T>(writer: &mut BufWriter<T>, bytes: Vec<u8>) -> Result<(), io::Error>
 where
     T: AsyncWrite + Unpin,
 {
-    writer.write_u8(42).await.expect("Unable to write header.");
-    writer.write_all(&bytes).await.expect("Could not write.");
-    writer.flush().await.unwrap();
+    // writer.write_u8(42).await.expect("Unable to write header.");
+    writer.write_all(&bytes).await?;
+    writer.flush().await?;
+    Ok(())
 }
 
 async fn client() {
