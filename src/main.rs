@@ -56,11 +56,16 @@ async fn client() {
 
         if !messages.is_empty() {
             println!("{} messages: {:?}", messages.len(), messages);
-            net_client.enqueue(
-                format!("Got {} message(s).", messages.len())
-                    .as_bytes()
-                    .to_vec(),
-            );
+            if net_client
+                .enqueue(
+                    format!("Got {} message(s).", messages.len())
+                        .as_bytes()
+                        .to_vec(),
+                )
+                .is_err()
+            {
+                break;
+            }
         }
     }
 }

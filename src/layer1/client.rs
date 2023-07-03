@@ -3,7 +3,7 @@ use tokio::{
     io::{self, BufReader, BufWriter},
     net::TcpStream,
     select,
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{Receiver, Sender, error::TrySendError},
 };
 
 pub struct NetClientLayer1 {
@@ -69,7 +69,7 @@ impl NetClientLayer1 {
         }
         messages
     }
-    pub fn enqueue(&mut self, bytes: Vec<u8>) {
-        self.write_tx.try_send(bytes).unwrap();
+    pub fn enqueue(&mut self, bytes: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
+        self.write_tx.try_send(bytes)
     }
 }
