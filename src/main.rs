@@ -26,7 +26,7 @@ async fn server() {
                 messages.len(),
                 messages
                     .iter()
-                    .map(|message| String::from_utf8(message.1.clone()).unwrap())
+                    .map(|message| (message.0.clone(), String::from_utf8(message.1.as_ref().unwrap().clone()).unwrap()))
                     .collect::<Vec<_>>()
             );
         }
@@ -37,8 +37,7 @@ async fn server() {
             if keys.is_empty() {
                 None
             } else {
-                let index = (count % keys.len());
-                println!("{index}");
+                let index = count % keys.len();
                 Some(keys[index].clone())
             }
         };
@@ -52,7 +51,7 @@ async fn server() {
 }
 
 struct NetServerLayer1 {
-    read_rxs: Arc<Mutex<HashMap<String, Receiver<Vec<u8>>>>>,
+    read_rxs: Arc<Mutex<HashMap<String, Receiver<Result<Vec<u8>, io::Error>>>>>,
     write_txs: Arc<Mutex<HashMap<String, Sender<Vec<u8>>>>>,
 }
 impl NetServerLayer1 {
@@ -111,8 +110,7 @@ impl NetServerLayer1 {
                                         // read_tx.try_send(response).unwrap();
                                         match response {
                                             Ok(bytes) => {
-                                                println!("Got byts: {:?}", bytes);
-                                                match read_tx.try_send(bytes) {
+                                                match read_tx.try_send(Ok(bytes)) {
                                                     Ok(_) => {},
                                                     Err(error) => {
                                                         eprintln!("Error in channeling read: {}", error);
@@ -121,8 +119,17 @@ impl NetServerLayer1 {
                                                 }
                                             },
                                             Err(error) => {
-                                                eprintln!("Error in read: {}", error);
-                                                println!("Removing this client handler");
+                                                // eprintln!("Error in read: {}", error);
+                                                // println!("Removing this client handler");
+                                                // TODO: This is pointless because the channel gets
+                                                // removed. Perhaps delay channel removal somehow
+                                                match read_tx.try_send(Err(error)) {
+                                                    Ok(_) => {},
+                                                    Err(error) => {
+                                                        eprintln!("Error in channeling read error: {}", error);
+                                                        panic!();
+                                                    }
+                                                }
                                                 read_rxs.lock().await.remove(&name.clone());
                                                 write_txs.lock().await.remove(&name.clone());
                                                 break;
@@ -142,7 +149,7 @@ impl NetServerLayer1 {
             write_txs,
         }
     }
-    pub async fn dequeue(&mut self) -> Vec<(String, Vec<u8>)> {
+    pub async fn dequeue(&mut self) -> Vec<(String, Result<Vec<u8>, io::Error>)> {
         let mut messages = Vec::new();
         for (name, read_rx) in self.read_rxs.lock().await.iter_mut() {
             while let Ok(message) = read_rx.try_recv() {
@@ -235,7 +242,7 @@ where
     if bytes_count == 0 {
         return Err(io::Error::new(ErrorKind::Other, "Read 0 Bytes!"));
     }
-    Ok(buf)
+    Ok(buf[..bytes_count].to_vec())
 }
 
 async fn write<T>(writer: &mut BufWriter<T>, bytes: Vec<u8>) -> Result<(), io::Error>
