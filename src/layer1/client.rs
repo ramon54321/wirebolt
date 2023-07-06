@@ -1,28 +1,38 @@
 use crate::layer1::utils::{read, write};
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{
     io::{self, BufReader, BufWriter},
+    join,
     net::TcpStream,
     sync::mpsc::{Receiver, Sender},
 };
 
 pub struct NetClientLayer1 {
+    is_connected: Arc<AtomicBool>,
     error_rx: Receiver<io::Error>,
     read_rx: Receiver<Vec<u8>>,
     write_tx: Sender<Vec<u8>>,
 }
 impl NetClientLayer1 {
-    pub async fn new() -> Result<Self, io::Error> {
-        let stream = TcpStream::connect("127.0.0.1:5555").await?;
+    pub async fn new(address: &str) -> Result<Self, io::Error> {
+        let stream = TcpStream::connect(address).await?;
 
+        let is_connected = Arc::new(AtomicBool::new(true));
         let (error_tx, error_rx) = tokio::sync::mpsc::channel(128);
         let (read_tx, read_rx) = tokio::sync::mpsc::channel(1024);
         let (write_tx, mut write_rx) = tokio::sync::mpsc::channel(1024);
 
         let (read_half, write_half) = stream.into_split();
 
-        {
+        let writer_task = {
             let error_tx = error_tx.clone();
-            tokio::spawn(async move {
+            let writer_task = tokio::spawn(async move {
                 let mut writer = BufWriter::new(write_half);
                 loop {
                     let bytes = write_rx.recv().await;
@@ -30,63 +40,87 @@ impl NetClientLayer1 {
                         Ok(_) => {}
                         Err(error) => {
                             match error_tx.send(error).await {
-                                // TODO: Should catch error - if this errors then
-                                // the error_rx is gone too early and the caller
-                                // will never get the error in the dequeue_errors
-                                // call
                                 Ok(_) => {}
                                 Err(_) => {
-                                    panic!()
+                                    panic!(
+                                        "Could not send error. Is the error_tx still available?"
+                                    );
                                 }
                             }
                             break;
                         }
                     }
                 }
-
-                println!("Shutting down writer");
+                println!("Shutting down writer.");
             });
-        }
+            writer_task
+        };
 
-        {
+        let reader_task = {
             let error_tx = error_tx.clone();
-            tokio::spawn(async move {
+            let reader_task = tokio::spawn(async move {
                 let mut reader = BufReader::new(read_half);
                 loop {
                     let response = read(&mut reader).await;
                     match response {
                         Ok(bytes) => match read_tx.send(bytes).await {
                             Ok(_) => {}
-                            Err(error) => {
-                                eprintln!("Error in channeling read: {}", error);
-                                panic!();
+                            Err(_) => {
+                                panic!("Could not send read. Is the read_tx still available?");
                             }
                         },
                         Err(error) => {
                             match error_tx.send(error).await {
-                                // TODO: Should catch error - if this errors then
-                                // the error_rx is gone too early and the caller
-                                // will never get the error in the dequeue_errors
-                                // call
                                 Ok(_) => {}
                                 Err(_) => {
-                                    panic!()
+                                    panic!(
+                                        "Could not send error. Is the error_tx still available?"
+                                    );
                                 }
                             }
                             break;
                         }
                     }
                 }
+                println!("Shutting down reader.");
+            });
+            reader_task
+        };
 
-                println!("Shutting down reader");
+        // -- Wait for both Reader and Writer to finish
+        {
+            let is_connected = is_connected.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    if writer_task.is_finished() {
+                        reader_task.abort();
+                        println!("Aborting reader.");
+                        break;
+                    }
+                    if reader_task.is_finished() {
+                        writer_task.abort();
+                        println!("Aborting writer.");
+                        break;
+                    }
+                }
+                let (_, _) = join!(writer_task, reader_task);
+                println!("Tasks joined. Cleaning up client.");
+                is_connected.store(false, Ordering::Relaxed);
+
+                // TODO: Add disconnected event
             });
         }
 
         Ok(Self {
+            is_connected,
             error_rx,
             read_rx,
             write_tx,
         })
+    }
+    pub fn is_connected(&self) -> bool {
+        self.is_connected.load(Ordering::Relaxed)
     }
     pub fn dequeue(&mut self) -> Vec<Vec<u8>> {
         let mut messages = Vec::new();
@@ -105,6 +139,8 @@ impl NetClientLayer1 {
     pub async fn enqueue(&mut self, bytes: Vec<u8>) {
         match self.write_tx.send(bytes).await {
             // -- No need to catch error. Client may have disconnected before tx completes
+            // TODO: Perhaps the error should indeed be propagated up to the caller... maybe they
+            // need the unsent bytes
             Ok(_) => {}
             Err(_) => {}
         };

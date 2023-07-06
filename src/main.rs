@@ -1,62 +1,70 @@
-use layer1::{client::NetClientLayer1, server::NetServerLayer1};
-
-mod layer1;
+use std::time::Duration;
+use tokhost::{NetClient, NetServer};
 
 async fn server() {
-    let Ok(mut net_server) = NetServerLayer1::new().await else { return; };
+    let Ok(mut net_server) = NetServer::new("127.0.0.1:5555").await else { return; };
 
     let mut count = 0;
     loop {
-        let messages = net_server.dequeue().await;
-
-        for message in messages.iter() {
-            // println!("MAIN: {:?}", String::from_utf8(message.to_owned()).unwrap());
-        }
-
-        let keys = net_server
-            .write_txs
-            .lock()
-            .await
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        if keys.is_empty() {
+        // -- Do not do anything if there are no connections
+        if net_server.connection_count().await == 0 {
+            tokio::time::sleep(Duration::from_millis(50)).await;
             continue;
         }
 
-        count += 1;
-        for name in keys.iter() {
-            let message = format!("Test-{}", count);
-            net_server
-                .enqueue(&name, message.clone().as_bytes().to_vec())
-                .await;
+        // -- Read errors
+        let errors = net_server.dequeue_errors().await;
+        for error in errors.iter() {
+            println!("Error Handled: {:?}", error);
         }
 
+        // -- Read messages
+        let messages = net_server.dequeue().await;
+        for _message in messages.iter() {}
+
+        // -- Send messages
+        let message = format!("Message-{}", count);
+        net_server
+            .broadcast(message.clone().as_bytes().to_vec())
+            .await;
+
+        // -- Report every thousand messages sent
         if count % 1000 == 0 {
-            println!("Sent {}", count);
+            println!("Sent {} messages.", count);
         }
+
+        count += 1;
     }
 }
 
 async fn client() {
-    let Ok(mut net_client) = NetClientLayer1::new().await else { return; };
+    let Ok(mut net_client) = NetClient::new("127.0.0.1:5555").await else { return; };
 
     let mut message_count = 0;
     loop {
-        let messages = net_client.dequeue();
-        let errors = net_client.dequeue_errors();
-
-        for error in errors.iter() {
-            eprintln!("Handling error: {}", error);
+        if !net_client.is_connected() {
+            break;
         }
 
+        // -- Read errors
+        let errors = net_client.dequeue_errors();
+        for error in errors.iter() {
+            println!("Error Handled: {:?}", error);
+        }
+
+        // -- Read messages
+        let messages = net_client.dequeue();
         for message in messages.iter() {
             message_count += 1;
+            // -- Convert message to string
             let text = String::from_utf8(message.to_owned()).unwrap();
+
+            // -- Send message back to server
             net_client
                 .enqueue(format!("Response: {}", text).as_bytes().to_vec())
                 .await;
 
+            // -- Report every thousand messages
             if message_count % 1000 == 0 {
                 println!("Message: {}", String::from_utf8(message.clone()).unwrap());
             }
