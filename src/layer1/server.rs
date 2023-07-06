@@ -3,7 +3,6 @@ use std::{collections::HashMap, sync::Arc};
 use tokio::{
     io::{self, BufReader, BufWriter},
     net::TcpListener,
-    select,
     sync::{
         mpsc::{Receiver, Sender},
         Mutex,
@@ -29,14 +28,14 @@ impl NetServerLayer1 {
             let write_txs = write_txs.clone();
             tokio::spawn(async move {
                 loop {
-                    let (mut stream, address) = tcp_listener
+                    let (stream, address) = tcp_listener
                         .accept()
                         .await
                         .expect("Unable to bind to connecting socket.");
                     let name = address.to_string();
 
-                    let (read_tx, read_rx) = tokio::sync::mpsc::channel(64);
-                    let (write_tx, mut write_rx) = tokio::sync::mpsc::channel(64);
+                    let (read_tx, read_rx) = tokio::sync::mpsc::channel(1024);
+                    let (write_tx, mut write_rx) = tokio::sync::mpsc::channel(1024);
 
                     read_rxs.lock().await.insert(name.clone(), read_rx);
                     write_txs.lock().await.insert(name.clone(), write_tx);
@@ -44,46 +43,53 @@ impl NetServerLayer1 {
                     {
                         let read_rxs = read_rxs.clone();
                         let write_txs = write_txs.clone();
+
+                        let (read_half, write_half) = stream.into_split();
+
                         tokio::spawn(async move {
-                            let (read_half, write_half) = stream.split();
-
                             let mut writer = BufWriter::new(write_half);
-                            let mut reader = BufReader::new(read_half);
-
                             loop {
-                                select! {
-                                    bytes = write_rx.recv() => {
-                                        match write(&mut writer, bytes.unwrap()).await {
-                                            Ok(_) => {},
-                                            Err(error) => eprintln!("Error in writing to socket: {}", error),
-                                        }
+                                let bytes = write_rx.recv().await;
+                                match write(&mut writer, bytes.unwrap()).await {
+                                    Ok(_) => {}
+                                    Err(error) => {
+                                        eprintln!(
+                                            "Unhandled break: Error in writing to socket: {}",
+                                            error
+                                        );
+                                        break;
                                     }
-                                    response = read(&mut reader) => {
-                                        match response {
-                                            Ok(bytes) => {
-                                                match read_tx.try_send(Ok(bytes)) {
-                                                    Ok(_) => {},
-                                                    Err(error) => {
-                                                        eprintln!("Error in channeling read: {}", error);
-                                                        panic!();
-                                                    }
-                                                }
-                                            },
-                                            Err(error) => {
-                                                // TODO: This is pointless because the channel gets
-                                                // removed. Perhaps delay channel removal somehow
-                                                match read_tx.try_send(Err(error)) {
-                                                    Ok(_) => {},
-                                                    Err(error) => {
-                                                        eprintln!("Error in channeling read error: {}", error);
-                                                        panic!();
-                                                    }
-                                                }
-                                                read_rxs.lock().await.remove(&name.clone());
-                                                write_txs.lock().await.remove(&name.clone());
-                                                break;
-                                            },
+                                }
+                            }
+                        });
+                        tokio::spawn(async move {
+                            let mut reader = BufReader::new(read_half);
+                            loop {
+                                let response = read(&mut reader).await;
+                                match response {
+                                    Ok(bytes) => match read_tx.send(Ok(bytes)).await {
+                                        Ok(_) => {}
+                                        Err(error) => {
+                                            eprintln!("Error in channeling read: {}", error);
+                                            panic!();
                                         }
+                                    },
+                                    Err(error) => {
+                                        // TODO: This is pointless because the channel gets
+                                        // removed. Perhaps delay channel removal somehow
+                                        match read_tx.send(Err(error)).await {
+                                            Ok(_) => {}
+                                            Err(error) => {
+                                                eprintln!(
+                                                    "Unhandled break: Error in channeling read error: {}",
+                                                    error
+                                                );
+                                                panic!();
+                                            }
+                                        }
+                                        read_rxs.lock().await.remove(&name.clone());
+                                        write_txs.lock().await.remove(&name.clone());
+                                        break;
                                     }
                                 }
                             }
@@ -108,12 +114,8 @@ impl NetServerLayer1 {
         messages
     }
     pub async fn enqueue(&mut self, name: &str, bytes: Vec<u8>) {
-        self.write_txs
-            .lock()
-            .await
-            .get_mut(name)
-            .unwrap()
-            .try_send(bytes)
-            .unwrap();
+        let mut txs = self.write_txs.lock().await;
+        let tx = txs.get_mut(name).unwrap();
+        tx.send(bytes).await.unwrap();
     }
 }

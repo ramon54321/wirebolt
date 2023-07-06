@@ -2,8 +2,7 @@ use crate::layer1::utils::{read, write};
 use tokio::{
     io::{self, BufReader, BufWriter},
     net::TcpStream,
-    select,
-    sync::mpsc::{Receiver, Sender, error::TrySendError},
+    sync::mpsc::{error::SendError, Receiver, Sender},
 };
 
 pub struct NetClientLayer1 {
@@ -12,49 +11,50 @@ pub struct NetClientLayer1 {
 }
 impl NetClientLayer1 {
     pub async fn new() -> Self {
-        let mut stream = TcpStream::connect("127.0.0.1:5555")
+        let stream = TcpStream::connect("127.0.0.1:5555")
             .await
             .expect("Unable to connect to socket.");
 
-        let (read_tx, read_rx) = tokio::sync::mpsc::channel(64);
-        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel(64);
+        let (read_tx, read_rx) = tokio::sync::mpsc::channel(1024);
+        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel(1024);
+
+        let (read_half, write_half) = stream.into_split();
 
         tokio::spawn(async move {
-            let (read_half, write_half) = stream.split();
-
             let mut writer = BufWriter::new(write_half);
-            let mut reader = BufReader::new(read_half);
-
             loop {
-                select! {
-                    bytes = write_rx.recv() => {
-                        match write(&mut writer, bytes.unwrap()).await {
-                            Ok(_) => {},
-                            Err(error) => eprintln!("Error in writing to socket: {}", error),
-                        }
+                let bytes = write_rx.recv().await;
+                match write(&mut writer, bytes.unwrap()).await {
+                    Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("Error in writing to socket: {}", error);
+                        break;
                     }
-                    response = read(&mut reader) => {
-                        match response {
-                            Ok(bytes) => {
-                                match read_tx.try_send(Ok(bytes)) {
-                                    Ok(_) => {},
-                                    Err(error) => {
-                                        eprintln!("Error in channeling read: {}", error);
-                                        panic!();
-                                    }
-                                }
-                            },
-                            Err(error) => {
-                                match read_tx.try_send(Err(error)) {
-                                    Ok(_) => {},
-                                    Err(error) => {
-                                        eprintln!("Error in channeling read error: {}", error);
-                                        panic!();
-                                    }
-                                }
-                                break;
-                            },
+                }
+            }
+        });
+
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(read_half);
+            loop {
+                let response = read(&mut reader).await;
+                match response {
+                    Ok(bytes) => match read_tx.send(Ok(bytes)).await {
+                        Ok(_) => {}
+                        Err(error) => {
+                            eprintln!("Error in channeling read: {}", error);
+                            panic!();
                         }
+                    },
+                    Err(error) => {
+                        match read_tx.send(Err(error)).await {
+                            Ok(_) => {}
+                            Err(error) => {
+                                eprintln!("Error in channeling read error: {}", error);
+                                panic!();
+                            }
+                        }
+                        break;
                     }
                 }
             }
@@ -69,7 +69,7 @@ impl NetClientLayer1 {
         }
         messages
     }
-    pub fn enqueue(&mut self, bytes: Vec<u8>) -> Result<(), TrySendError<Vec<u8>>> {
-        self.write_tx.try_send(bytes)
+    pub async fn enqueue(&mut self, bytes: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
+        self.write_tx.send(bytes).await
     }
 }

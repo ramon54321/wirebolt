@@ -8,40 +8,37 @@ async fn server() {
 
     let mut count = 0;
     loop {
-        count += 1;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-
         let messages = net_server.dequeue().await;
 
-        if !messages.is_empty() {
-            println!(
-                "{} messages: {:?}",
-                messages.len(),
-                messages
-                    .iter()
-                    .map(|message| (
-                        message.0.clone(),
-                        String::from_utf8(message.1.as_ref().unwrap().clone()).unwrap()
-                    ))
-                    .collect::<Vec<_>>()
-            );
+        for message in messages
+            .iter()
+            .filter(|message| message.1.is_ok())
+            .map(|message| message.1.as_ref().unwrap())
+        {
+            // println!("MAIN: {:?}", String::from_utf8(message.to_owned()).unwrap());
         }
 
-        let name = {
-            let write_txs = net_server.write_txs.lock().await;
-            let keys = write_txs.keys().collect::<Vec<_>>();
-            if keys.is_empty() {
-                None
-            } else {
-                let index = count % keys.len();
-                Some(keys[index].clone())
-            }
-        };
-        if let Some(name) = name {
-            println!("Sending message to {}", name.clone());
+        let keys = net_server
+            .write_txs
+            .lock()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        if keys.is_empty() {
+            continue;
+        }
+
+        count += 1;
+        for name in keys.iter() {
+            let message = format!("Test-{}", count);
             net_server
-                .enqueue(&name, "Hello from the server.".as_bytes().to_vec())
+                .enqueue(&name, message.clone().as_bytes().to_vec())
                 .await;
+        }
+
+        if count % 1000 == 0 {
+            println!("Sent {}", count);
         }
     }
 }
@@ -49,22 +46,29 @@ async fn server() {
 async fn client() {
     let mut net_client = NetClientLayer1::new().await;
 
+    let mut message_count = 0;
     loop {
-        tokio::time::sleep(Duration::from_millis(800)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
 
         let messages = net_client.dequeue();
 
-        if !messages.is_empty() {
-            println!("{} messages: {:?}", messages.len(), messages);
+        for message in messages
+            .iter()
+            .filter(|message| message.is_ok())
+            .map(|message| message.as_ref().unwrap())
+        {
+            message_count += 1;
+            let text = String::from_utf8(message.to_owned()).unwrap();
             if net_client
-                .enqueue(
-                    format!("Got {} message(s).", messages.len())
-                        .as_bytes()
-                        .to_vec(),
-                )
+                .enqueue(format!("Response: {}", text).as_bytes().to_vec())
+                .await
                 .is_err()
             {
                 break;
+            }
+
+            if message_count % 1000 == 0 {
+                println!("Message number {}", message_count);
             }
         }
     }
