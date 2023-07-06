@@ -51,12 +51,13 @@ async fn client() {
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         let messages = net_client.dequeue();
+        let errors = net_client.dequeue_errors();
 
-        for message in messages
-            .iter()
-            .filter(|message| message.is_ok())
-            .map(|message| message.as_ref().unwrap())
-        {
+        for error in errors.iter() {
+            eprintln!("Handling error: {}", error);
+        }
+
+        for message in messages.iter() {
             message_count += 1;
             let text = String::from_utf8(message.to_owned()).unwrap();
             if net_client
