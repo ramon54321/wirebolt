@@ -16,6 +16,7 @@ cargo run --example hello_world
 ```
 
 Start the server first, then connect with clients.
+This example simply has a server which broadcasts to all clients as quickly as it can. Clients then echo the message back to the server.
 
 #### Server
 ```rust
