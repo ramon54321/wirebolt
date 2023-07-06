@@ -7,7 +7,7 @@ WireBolt is a lightweight Rust wrapper around TCP, abstracting the threading con
 In the server terminal:
 
 ```
-cargo run --example hello_world --server
+cargo run --example hello_world -- server
 ```
 
 In as many client terminals as you like:
