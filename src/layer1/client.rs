@@ -13,8 +13,14 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
 };
 
+#[derive(Debug)]
+pub enum NetClientInfo {
+    Connection,
+    Disconnection,
+}
 pub struct NetClientLayer1 {
     is_connected: Arc<AtomicBool>,
+    info_rx: Receiver<NetClientInfo>,
     error_rx: Receiver<io::Error>,
     read_rx: Receiver<Vec<u8>>,
     write_tx: Sender<Vec<u8>>,
@@ -24,6 +30,7 @@ impl NetClientLayer1 {
         let stream = TcpStream::connect(address).await?;
 
         let is_connected = Arc::new(AtomicBool::new(true));
+        let (info_tx, info_rx) = tokio::sync::mpsc::channel(128);
         let (error_tx, error_rx) = tokio::sync::mpsc::channel(128);
         let (read_tx, read_rx) = tokio::sync::mpsc::channel(1024);
         let (write_tx, mut write_rx) = tokio::sync::mpsc::channel(1024);
@@ -39,14 +46,10 @@ impl NetClientLayer1 {
                     match write(&mut writer, bytes.unwrap()).await {
                         Ok(_) => {}
                         Err(error) => {
-                            match error_tx.send(error).await {
-                                Ok(_) => {}
-                                Err(_) => {
-                                    panic!(
-                                        "Could not send error. Is the error_tx still available?"
-                                    );
-                                }
-                            }
+                            error_tx
+                                .send(error)
+                                .await
+                                .expect("Could not send error. Is the error_tx still available?");
                             break;
                         }
                     }
@@ -63,21 +66,15 @@ impl NetClientLayer1 {
                 loop {
                     let response = read(&mut reader).await;
                     match response {
-                        Ok(bytes) => match read_tx.send(bytes).await {
-                            Ok(_) => {}
-                            Err(_) => {
-                                panic!("Could not send read. Is the read_tx still available?");
-                            }
-                        },
+                        Ok(bytes) => read_tx
+                            .send(bytes)
+                            .await
+                            .expect("Could not send read. Is the read_tx still available?"),
                         Err(error) => {
-                            match error_tx.send(error).await {
-                                Ok(_) => {}
-                                Err(_) => {
-                                    panic!(
-                                        "Could not send error. Is the error_tx still available?"
-                                    );
-                                }
-                            }
+                            error_tx
+                                .send(error)
+                                .await
+                                .expect("Could not send error. Is the error_tx still available?");
                             break;
                         }
                     }
@@ -90,6 +87,7 @@ impl NetClientLayer1 {
         // -- Wait for both Reader and Writer to finish
         {
             let is_connected = is_connected.clone();
+            let info_tx = info_tx.clone();
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -106,14 +104,22 @@ impl NetClientLayer1 {
                 }
                 let (_, _) = join!(writer_task, reader_task);
                 println!("Tasks joined. Cleaning up client.");
+                info_tx
+                    .send(NetClientInfo::Disconnection)
+                    .await
+                    .expect("Could not send info. Is the info_tx still available?");
                 is_connected.store(false, Ordering::Relaxed);
-
-                // TODO: Add disconnected event
             });
         }
 
+        info_tx
+            .send(NetClientInfo::Connection)
+            .await
+            .expect("Could not send info. Is the info_tx still available?");
+
         Ok(Self {
             is_connected,
+            info_rx,
             error_rx,
             read_rx,
             write_tx,
@@ -128,6 +134,13 @@ impl NetClientLayer1 {
             messages.push(message);
         }
         messages
+    }
+    pub fn dequeue_info(&mut self) -> Vec<NetClientInfo> {
+        let mut infos = Vec::new();
+        while let Ok(info) = self.info_rx.try_recv() {
+            infos.push(info);
+        }
+        infos
     }
     pub fn dequeue_errors(&mut self) -> Vec<io::Error> {
         let mut errors = Vec::new();

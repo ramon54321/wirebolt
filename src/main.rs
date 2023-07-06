@@ -6,21 +6,27 @@ async fn server() {
 
     let mut count = 0;
     loop {
+        // -- Read errors
+        let errors = net_server.dequeue_errors();
+        for error in errors.iter() {
+            println!("Error Handled: {:?}", error);
+        }
+
+        // -- Read infos
+        let infos = net_server.dequeue_info();
+        for info in infos.iter() {
+            println!("Info Handled: {:?}", info);
+        }
+
+        // -- Read messages
+        let messages = net_server.dequeue();
+        for _message in messages.iter() {}
+
         // -- Do not do anything if there are no connections
         if net_server.connection_count().await == 0 {
             tokio::time::sleep(Duration::from_millis(50)).await;
             continue;
         }
-
-        // -- Read errors
-        let errors = net_server.dequeue_errors().await;
-        for error in errors.iter() {
-            println!("Error Handled: {:?}", error);
-        }
-
-        // -- Read messages
-        let messages = net_server.dequeue().await;
-        for _message in messages.iter() {}
 
         // -- Send messages
         let message = format!("Message-{}", count);
@@ -50,6 +56,12 @@ async fn client() {
         let errors = net_client.dequeue_errors();
         for error in errors.iter() {
             println!("Error Handled: {:?}", error);
+        }
+
+        // -- Read infos
+        let infos = net_client.dequeue_info();
+        for info in infos.iter() {
+            println!("Info Handled: {:?}", info);
         }
 
         // -- Read messages

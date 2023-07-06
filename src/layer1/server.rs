@@ -14,27 +14,32 @@ use tokio::{
     },
 };
 
+#[derive(Debug)]
+pub enum NetServerInfo {
+    Connection,
+    Disconnection,
+}
 pub struct NetServerLayer1 {
     connections: Arc<Mutex<HashSet<String>>>,
-    error_rxs: Arc<Mutex<HashMap<String, Receiver<io::Error>>>>,
-    read_rxs: Arc<Mutex<HashMap<String, Receiver<Vec<u8>>>>>,
+    info_rx: Receiver<(String, NetServerInfo)>,
+    error_rx: Receiver<(String, io::Error)>,
+    read_rx: Receiver<(String, Vec<u8>)>,
     write_txs: Arc<Mutex<HashMap<String, Sender<Vec<u8>>>>>,
 }
 impl NetServerLayer1 {
     pub async fn new(address: &str) -> Result<Self, io::Error> {
         let tcp_listener = TcpListener::bind(address).await?;
 
-        let connections = Arc::new(Mutex::new(HashSet::new()));
-        let error_rxs = Arc::new(Mutex::new(HashMap::new()));
-        let read_rxs = Arc::new(Mutex::new(HashMap::new()));
+        let (info_tx, info_rx) = tokio::sync::mpsc::channel(256);
+        let (error_tx, error_rx) = tokio::sync::mpsc::channel(256);
+        let (read_tx, read_rx) = tokio::sync::mpsc::channel(1024);
         let write_txs = Arc::new(Mutex::new(HashMap::new()));
+        let connections = Arc::new(Mutex::new(HashSet::new()));
 
         // -- Connection Listener
         {
-            let connections = connections.clone();
-            let error_rxs = error_rxs.clone();
-            let read_rxs = read_rxs.clone();
             let write_txs = write_txs.clone();
+            let connections = connections.clone();
             tokio::spawn(async move {
                 loop {
                     let (stream, address) = tcp_listener
@@ -43,19 +48,16 @@ impl NetServerLayer1 {
                         .expect("Unable to bind to connecting socket.");
                     let name = address.to_string();
 
-                    let (error_tx, error_rx) = tokio::sync::mpsc::channel(256);
-                    let (read_tx, read_rx) = tokio::sync::mpsc::channel(1024);
                     let (write_tx, mut write_rx) = tokio::sync::mpsc::channel(1024);
 
-                    connections.lock().await.insert(name.clone());
-                    error_rxs.lock().await.insert(name.clone(), error_rx);
-                    read_rxs.lock().await.insert(name.clone(), read_rx);
                     write_txs.lock().await.insert(name.clone(), write_tx);
+                    connections.lock().await.insert(name.clone());
 
                     {
                         let (read_half, write_half) = stream.into_split();
 
                         let writer_task = {
+                            let name = name.clone();
                             let error_tx = error_tx.clone();
                             let writer_task = tokio::spawn(async move {
                                 let mut writer = BufWriter::new(write_half);
@@ -64,14 +66,8 @@ impl NetServerLayer1 {
                                     match write(&mut writer, bytes.unwrap()).await {
                                         Ok(_) => {}
                                         Err(error) => {
-                                            match error_tx.send(error).await {
-                                                Ok(_) => {}
-                                                Err(_) => {
-                                                    panic!(
-                                                        "Could not send error. Is the error_tx still available?"
-                                                    );
-                                                }
-                                            }
+                                            error_tx.send((name.clone(), error)).await
+                                                .expect("Could not send error. Is the error_tx still available?");
                                             break;
                                         }
                                     }
@@ -82,29 +78,23 @@ impl NetServerLayer1 {
                         };
 
                         let reader_task = {
+                            let name = name.clone();
                             let error_tx = error_tx.clone();
+                            let read_tx = read_tx.clone();
                             let reader_task = tokio::spawn(async move {
                                 let mut reader = BufReader::new(read_half);
                                 loop {
                                     let response = read(&mut reader).await;
                                     match response {
-                                        Ok(bytes) => match read_tx.send(bytes).await {
-                                            Ok(_) => {}
-                                            Err(_) => {
-                                                panic!(
-                                                    "Could not send read. Is the read_tx still available?"
-                                                );
-                                            }
-                                        },
+                                        Ok(bytes) => read_tx
+                                            .send((name.clone(), bytes))
+                                            .await
+                                            .expect(
+                                            "Could not send read. Is the read_tx still available?",
+                                        ),
                                         Err(error) => {
-                                            match error_tx.send(error).await {
-                                                Ok(_) => {}
-                                                Err(_) => {
-                                                    panic!(
-                                                        "Could not send error. Is the error_tx still available?"
-                                                    );
-                                                }
-                                            }
+                                            error_tx.send((name.clone(), error)).await
+                                                .expect("Could not send error. Is the error_tx still available?");
                                             break;
                                         }
                                     }
@@ -118,8 +108,7 @@ impl NetServerLayer1 {
                         {
                             let name = name.clone();
                             let connections = connections.clone();
-                            let error_rxs = error_rxs.clone();
-                            let read_rxs = read_rxs.clone();
+                            let info_tx = info_tx.clone();
                             let write_txs = write_txs.clone();
                             tokio::spawn(async move {
                                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -137,14 +126,19 @@ impl NetServerLayer1 {
                                 }
                                 let (_, _) = join!(writer_task, reader_task);
                                 println!("Tasks joined. Cleaning up server.");
-                                connections.lock().await.remove(&name.clone());
-                                error_rxs.lock().await.remove(&name.clone());
-                                read_rxs.lock().await.remove(&name.clone());
                                 write_txs.lock().await.remove(&name.clone());
-
-                                // TODO: Add disconnected event
+                                connections.lock().await.remove(&name.clone());
+                                info_tx
+                                    .send((name.clone(), NetServerInfo::Disconnection))
+                                    .await
+                                    .expect("Could not send info. Is the info_tx still available?");
                             });
                         }
+
+                        info_tx
+                            .send((name.clone(), NetServerInfo::Connection))
+                            .await
+                            .expect("Could not send info. Is the info_tx still available?");
                     }
                 }
             });
@@ -152,29 +146,33 @@ impl NetServerLayer1 {
 
         Ok(Self {
             connections,
-            error_rxs,
-            read_rxs,
+            info_rx,
+            error_rx,
+            read_rx,
             write_txs,
         })
     }
     pub async fn connection_count(&self) -> usize {
         self.connections.lock().await.len()
     }
-    pub async fn dequeue(&mut self) -> Vec<(String, Vec<u8>)> {
+    pub fn dequeue(&mut self) -> Vec<(String, Vec<u8>)> {
         let mut messages = Vec::new();
-        for (name, read_rx) in self.read_rxs.lock().await.iter_mut() {
-            while let Ok(message) = read_rx.try_recv() {
-                messages.push((name.clone(), message));
-            }
+        while let Ok(message) = self.read_rx.try_recv() {
+            messages.push(message);
         }
         messages
     }
-    pub async fn dequeue_errors(&mut self) -> Vec<(String, io::Error)> {
+    pub fn dequeue_info(&mut self) -> Vec<(String, NetServerInfo)> {
+        let mut infos = Vec::new();
+        while let Ok(info) = self.info_rx.try_recv() {
+            infos.push(info);
+        }
+        infos
+    }
+    pub fn dequeue_errors(&mut self) -> Vec<(String, io::Error)> {
         let mut errors = Vec::new();
-        for (name, error_rx) in self.error_rxs.lock().await.iter_mut() {
-            while let Ok(error) = error_rx.try_recv() {
-                errors.push((name.clone(), error));
-            }
+        while let Ok(error) = self.error_rx.try_recv() {
+            errors.push(error);
         }
         errors
     }
