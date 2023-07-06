@@ -19,8 +19,3 @@ where
     reader.read_exact(&mut buffer).await?;
     Ok(buffer)
 }
-
-// pub enum NetError {
-//     IOError(std::io::Error),
-//     SendError(std::io::Error),
-// }

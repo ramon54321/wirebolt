@@ -2,7 +2,7 @@ use crate::layer1::utils::{read, write};
 use tokio::{
     io::{self, BufReader, BufWriter},
     net::TcpStream,
-    sync::mpsc::{error::SendError, Receiver, Sender},
+    sync::mpsc::{Receiver, Sender},
 };
 
 pub struct NetClientLayer1 {
@@ -11,10 +11,8 @@ pub struct NetClientLayer1 {
     write_tx: Sender<Vec<u8>>,
 }
 impl NetClientLayer1 {
-    pub async fn new() -> Self {
-        let stream = TcpStream::connect("127.0.0.1:5555")
-            .await
-            .expect("Unable to connect to socket.");
+    pub async fn new() -> Result<Self, io::Error> {
+        let stream = TcpStream::connect("127.0.0.1:5555").await?;
 
         let (error_tx, error_rx) = tokio::sync::mpsc::channel(128);
         let (read_tx, read_rx) = tokio::sync::mpsc::channel(1024);
@@ -31,8 +29,16 @@ impl NetClientLayer1 {
                     match write(&mut writer, bytes.unwrap()).await {
                         Ok(_) => {}
                         Err(error) => {
-                            error_tx.send(error).await.unwrap();
-                            // eprintln!("Error in writing to socket: {}", error);
+                            match error_tx.send(error).await {
+                                // TODO: Should catch error - if this errors then
+                                // the error_rx is gone too early and the caller
+                                // will never get the error in the dequeue_errors
+                                // call
+                                Ok(_) => {}
+                                Err(_) => {
+                                    panic!()
+                                }
+                            }
                             break;
                         }
                     }
@@ -57,7 +63,16 @@ impl NetClientLayer1 {
                             }
                         },
                         Err(error) => {
-                            error_tx.send(error).await.unwrap();
+                            match error_tx.send(error).await {
+                                // TODO: Should catch error - if this errors then
+                                // the error_rx is gone too early and the caller
+                                // will never get the error in the dequeue_errors
+                                // call
+                                Ok(_) => {}
+                                Err(_) => {
+                                    panic!()
+                                }
+                            }
                             break;
                         }
                     }
@@ -67,11 +82,11 @@ impl NetClientLayer1 {
             });
         }
 
-        Self {
+        Ok(Self {
             error_rx,
             read_rx,
             write_tx,
-        }
+        })
     }
     pub fn dequeue(&mut self) -> Vec<Vec<u8>> {
         let mut messages = Vec::new();
@@ -87,7 +102,11 @@ impl NetClientLayer1 {
         }
         errors
     }
-    pub async fn enqueue(&mut self, bytes: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
-        self.write_tx.send(bytes).await
+    pub async fn enqueue(&mut self, bytes: Vec<u8>) {
+        match self.write_tx.send(bytes).await {
+            // -- No need to catch error. Client may have disconnected before tx completes
+            Ok(_) => {}
+            Err(_) => {}
+        };
     }
 }

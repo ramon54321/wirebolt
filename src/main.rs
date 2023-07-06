@@ -1,20 +1,15 @@
 use layer1::{client::NetClientLayer1, server::NetServerLayer1};
-use std::time::Duration;
 
 mod layer1;
 
 async fn server() {
-    let mut net_server = NetServerLayer1::new().await;
+    let Ok(mut net_server) = NetServerLayer1::new().await else { return; };
 
     let mut count = 0;
     loop {
         let messages = net_server.dequeue().await;
 
-        for message in messages
-            .iter()
-            .filter(|message| message.1.is_ok())
-            .map(|message| message.1.as_ref().unwrap())
-        {
+        for message in messages.iter() {
             // println!("MAIN: {:?}", String::from_utf8(message.to_owned()).unwrap());
         }
 
@@ -44,12 +39,10 @@ async fn server() {
 }
 
 async fn client() {
-    let mut net_client = NetClientLayer1::new().await;
+    let Ok(mut net_client) = NetClientLayer1::new().await else { return; };
 
     let mut message_count = 0;
     loop {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-
         let messages = net_client.dequeue();
         let errors = net_client.dequeue_errors();
 
@@ -60,13 +53,9 @@ async fn client() {
         for message in messages.iter() {
             message_count += 1;
             let text = String::from_utf8(message.to_owned()).unwrap();
-            if net_client
+            net_client
                 .enqueue(format!("Response: {}", text).as_bytes().to_vec())
-                .await
-                .is_err()
-            {
-                break;
-            }
+                .await;
 
             if message_count % 1000 == 0 {
                 println!("Message: {}", String::from_utf8(message.clone()).unwrap());
