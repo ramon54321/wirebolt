@@ -68,7 +68,7 @@ async fn client() {
             }
 
             if message_count % 1000 == 0 {
-                println!("Message number {}", message_count);
+                println!("Message: {}", String::from_utf8(message.clone()).unwrap());
             }
         }
     }
