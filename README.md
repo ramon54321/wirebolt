@@ -1,6 +1,24 @@
-use std::time::Duration;
-use tokhost::{NetClient, NetServer};
+## WireBolt
 
+WireBolt is a lightweight Rust wrapper around TCP, abstracting the threading concerns, allowing you to focus on sending and receiving messages from clients through polling.
+
+### Example
+
+In the server terminal:
+
+```
+cargo run --example hello_world --server
+```
+
+In as many client terminals as you like:
+```
+cargo run --example hello_world
+```
+
+Start the server first, then connect with clients.
+
+#### Server
+```rust
 async fn server() {
     let Ok(mut net_server) = NetServer::new("127.0.0.1:5555").await else { return; };
 
@@ -34,20 +52,24 @@ async fn server() {
             .broadcast(message.clone().as_bytes().to_vec())
             .await;
 
-        // -- Report every thousand messages sent
-        if count % 1000 == 0 {
+        // -- Report every 25 thousand messages sent
+        if count % 25000 == 0 {
             println!("Sent {} messages.", count);
         }
 
         count += 1;
     }
 }
+```
 
+#### Client
+```rust
 async fn client() {
     let Ok(mut net_client) = NetClient::new("127.0.0.1:5555").await else { return; };
 
     let mut message_count = 0;
     loop {
+        // -- If connection drops, exit application
         if !net_client.is_connected() {
             break;
         }
@@ -76,22 +98,11 @@ async fn client() {
                 .enqueue(format!("Response: {}", text).as_bytes().to_vec())
                 .await;
 
-            // -- Report every thousand messages
-            if message_count % 1000 == 0 {
+            // -- Report every 25 thousand messages
+            if message_count % 25000 == 0 {
                 println!("Message: {}", String::from_utf8(message.clone()).unwrap());
             }
         }
     }
 }
-
-#[tokio::main]
-async fn main() {
-    if std::env::args()
-        .find(|arg| arg.eq_ignore_ascii_case("server"))
-        .is_some()
-    {
-        server().await;
-    } else {
-        client().await;
-    }
-}
+```

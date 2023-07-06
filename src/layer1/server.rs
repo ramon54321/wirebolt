@@ -72,7 +72,7 @@ impl NetServerLayer1 {
                                         }
                                     }
                                 }
-                                println!("Shutting down writer.");
+                                // println!("Shutting down writer.");
                             });
                             writer_task
                         };
@@ -99,7 +99,7 @@ impl NetServerLayer1 {
                                         }
                                     }
                                 }
-                                println!("Shutting down reader.");
+                                // println!("Shutting down reader.");
                             });
                             reader_task
                         };
@@ -115,17 +115,17 @@ impl NetServerLayer1 {
                                 loop {
                                     if writer_task.is_finished() {
                                         reader_task.abort();
-                                        println!("Aborting reader.");
+                                        // println!("Aborting reader.");
                                         break;
                                     }
                                     if reader_task.is_finished() {
                                         writer_task.abort();
-                                        println!("Aborting writer.");
+                                        // println!("Aborting writer.");
                                         break;
                                     }
                                 }
                                 let (_, _) = join!(writer_task, reader_task);
-                                println!("Tasks joined. Cleaning up server.");
+                                // println!("Tasks joined. Cleaning up server.");
                                 write_txs.lock().await.remove(&name.clone());
                                 connections.lock().await.remove(&name.clone());
                                 info_tx

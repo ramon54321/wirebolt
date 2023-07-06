@@ -54,7 +54,7 @@ impl NetClientLayer1 {
                         }
                     }
                 }
-                println!("Shutting down writer.");
+                // println!("Shutting down writer.");
             });
             writer_task
         };
@@ -79,7 +79,7 @@ impl NetClientLayer1 {
                         }
                     }
                 }
-                println!("Shutting down reader.");
+                // println!("Shutting down reader.");
             });
             reader_task
         };
@@ -93,17 +93,17 @@ impl NetClientLayer1 {
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     if writer_task.is_finished() {
                         reader_task.abort();
-                        println!("Aborting reader.");
+                        // println!("Aborting reader.");
                         break;
                     }
                     if reader_task.is_finished() {
                         writer_task.abort();
-                        println!("Aborting writer.");
+                        // println!("Aborting writer.");
                         break;
                     }
                 }
                 let (_, _) = join!(writer_task, reader_task);
-                println!("Tasks joined. Cleaning up client.");
+                // println!("Tasks joined. Cleaning up client.");
                 info_tx
                     .send(NetClientInfo::Disconnection)
                     .await
