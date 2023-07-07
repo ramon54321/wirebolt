@@ -1,6 +1,13 @@
 [package]
 name = "wirebolt"
 version = "0.1.0"
+authors = ["Ramon Brand"]
+description = "Lightweight and performant TCP wrapper."
+keywords = ["tcp", "network", "async", "lightweight"]
+categories = ["asynchronous", "network-programming"]
+repository = "https://github.com/ramon54321/wirebolt"
+readme = "README.md"
+license = "MIT"
 edition = "2021"
 
 [dependencies]
