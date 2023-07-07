@@ -1,3 +1,7 @@
+<div align="center">
+  <span><img src="./docs/WireBoltDark.png" width="50%"></span>
+</div>
+
 ## WireBolt
 
 WireBolt is a lightweight Rust wrapper around TCP, abstracting the threading concerns, allowing you to focus on sending and receiving messages from clients through polling.
