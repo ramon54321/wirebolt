@@ -1,5 +1,5 @@
 <div align="center">
-  <span><img src="./docs/WireBoltDark.png" width="50%"></span>
+  <span><img src="./docs/WireBoltDarkGitHub.png" width="50%"></span>
 </div>
 
 ## WireBolt
