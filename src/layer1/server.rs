@@ -42,6 +42,7 @@ impl NetServerLayer1 {
             let connections = connections.clone();
             tokio::spawn(async move {
                 loop {
+                    // println!("Waiting for connection...");
                     let (stream, address) = tcp_listener
                         .accept()
                         .await
@@ -111,8 +112,8 @@ impl NetServerLayer1 {
                             let info_tx = info_tx.clone();
                             let write_txs = write_txs.clone();
                             tokio::spawn(async move {
-                                tokio::time::sleep(Duration::from_millis(50)).await;
                                 loop {
+                                    tokio::time::sleep(Duration::from_millis(50)).await;
                                     if writer_task.is_finished() {
                                         reader_task.abort();
                                         // println!("Aborting reader.");
